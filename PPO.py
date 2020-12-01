@@ -53,14 +53,14 @@ class ActorCritic(nn.Module):
         return state_value
         
     def act(self, state, memory):
-        state = torch.from_numpy(state).float().to(device).permute(2, 0, 1).unsqueeze(dim=0)
+        state = torch.from_numpy(state).float().permute(2, 0, 1).unsqueeze(dim=0).to(device)
         action_probs = self.forward_actor(state)
         dist = Categorical(action_probs)
         action = dist.sample()
         
-        memory.states.append(state)
-        memory.actions.append(action)
-        memory.logprobs.append(dist.log_prob(action))
+        memory.states.append(state.detach().to('cpu'))
+        memory.actions.append(action.detach().to('cpu'))
+        memory.logprobs.append(dist.log_prob(action).detach().to('cpu'))
         
         return action.item()
     
@@ -110,13 +110,13 @@ class PPO:
             rewards.insert(0, discounted_reward)
         
         # Normalizing the rewards:
-        rewards = torch.tensor(rewards, dtype=torch.float32).to(device)
+        rewards = torch.tensor(rewards, dtype=torch.float32)
         rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-5)
         
         # convert list to tensor
-        old_states = torch.stack(memory.states).to(device).detach()
-        old_actions = torch.stack(memory.actions).to(device).detach()
-        old_logprobs = torch.stack(memory.logprobs).to(device).detach()
+        old_states = torch.stack(memory.states)
+        old_actions = torch.stack(memory.actions)
+        old_logprobs = torch.stack(memory.logprobs)
         
         self.policy.train_mode()
 
@@ -125,10 +125,10 @@ class PPO:
             epoch_indices = torch.arange(old_states.shape[0])
             for i in range(math.ceil(old_states.shape[0] / self.net_batch_size)):
                 batch_indices = epoch_indices[i * self.net_batch_size : min((i + 1) * self.net_batch_size, old_states.shape[0])]
-                old_states_batch = old_states[batch_indices]
-                old_actions_batch = old_actions[batch_indices]
-                old_logprobs_batch = old_logprobs[batch_indices]
-                rewards_batch = rewards[batch_indices]
+                old_states_batch = old_states[batch_indices].to(device).detach()
+                old_actions_batch = old_actions[batch_indices].to(device).detach()
+                old_logprobs_batch = old_logprobs[batch_indices].to(device).detach()
+                rewards_batch = rewards[batch_indices].to(device)
 
                 # Evaluating old actions and values :
                 logprobs, state_values, dist_entropy = self.policy.evaluate(old_states_batch, old_actions_batch)
@@ -166,10 +166,10 @@ def main():
     n_latent_var = 64           # number of variables in hidden layer
     update_timestep = 500      # update policy every n timesteps
     lr = 0.002
-    batch_size = 30
+    batch_size = 200
     betas = (0.9, 0.999)
     gamma = 0.99                # discount factor
-    K_epochs = 4                # update policy for K epochs
+    K_epochs = 1                # update policy for K epochs
     eps_clip = 0.2              # clip parameter for PPO
     random_seed = None
     #############################################
@@ -190,7 +190,7 @@ def main():
     # training loop
     for i_episode in range(1, max_episodes+1):
         state = env.reset()
-        for t in tqdm(range(max_timesteps)):
+        for t in range(max_timesteps):
             timestep += 1
             
             # Running policy_old:

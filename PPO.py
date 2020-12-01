@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 from torch.distributions import Categorical
@@ -82,12 +84,13 @@ class ActorCritic(nn.Module):
         self.value_cnn.eval()
         
 class PPO:
-    def __init__(self, state_dim, action_dim, n_latent_var, lr, betas, gamma, K_epochs, eps_clip):
+    def __init__(self, state_dim, action_dim, n_latent_var, lr, betas, gamma, K_epochs, eps_clip, net_batch_size):
         self.lr = lr
         self.betas = betas
         self.gamma = gamma
         self.eps_clip = eps_clip
         self.K_epochs = K_epochs
+        self.net_batch_size = net_batch_size
         
         self.policy = ActorCritic(state_dim, action_dim, n_latent_var).to(device)
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=lr, betas=betas)
@@ -119,22 +122,30 @@ class PPO:
 
         # Optimize policy for K epochs:
         for _ in range(self.K_epochs):
-            # Evaluating old actions and values :
-            logprobs, state_values, dist_entropy = self.policy.evaluate(old_states, old_actions)
-            
-            # Finding the ratio (pi_theta / pi_theta__old):
-            ratios = torch.exp(logprobs - old_logprobs.detach())
+            epoch_indices = torch.arange(old_states.shape[0])
+            for i in range(math.ceil(old_states.shape[0] / self.net_batch_size)):
+                batch_indices = epoch_indices[i * self.net_batch_size : min((i + 1) * self.net_batch_size, old_states.shape[0])]
+                old_states_batch = old_states[batch_indices]
+                old_actions_batch = old_actions[batch_indices]
+                old_logprobs_batch = old_logprobs[batch_indices]
+                rewards_batch = rewards[batch_indices]
+
+                # Evaluating old actions and values :
+                logprobs, state_values, dist_entropy = self.policy.evaluate(old_states_batch, old_actions_batch)
                 
-            # Finding Surrogate Loss:
-            advantages = rewards - state_values.detach()
-            surr1 = ratios * advantages
-            surr2 = torch.clamp(ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
-            loss = -torch.min(surr1, surr2) + 0.5 *s elf.MseLoss(state_values, rewards) - 0.01 * dist_entropy
-            
-            # take gradient step
-            self.optimizer.zero_grad()
-            loss.mean().backward()
-            self.optimizer.step()
+                # Finding the ratio (pi_theta / pi_theta__old):
+                ratios = torch.exp(logprobs - old_logprobs_batch.detach())
+                    
+                # Finding Surrogate Loss:
+                advantages = rewards_batch - state_values.detach()
+                surr1 = ratios * advantages
+                surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
+                loss = -torch.min(surr1, surr2) + 0.5 * self.MseLoss(state_values, rewards_batch) - 0.01 * dist_entropy
+                 
+                # take gradient step
+                self.optimizer.zero_grad()
+                loss.mean().backward()
+                self.optimizer.step()
         
         # Copy new weights into old policy:
         self.policy_old.load_state_dict(self.policy.state_dict())
@@ -155,6 +166,7 @@ def main():
     n_latent_var = 64           # number of variables in hidden layer
     update_timestep = 500      # update policy every n timesteps
     lr = 0.002
+    batch_size = 30
     betas = (0.9, 0.999)
     gamma = 0.99                # discount factor
     K_epochs = 4                # update policy for K epochs
@@ -167,7 +179,7 @@ def main():
         env.seed(random_seed)
     
     memory = Memory()
-    ppo = PPO(state_dim, action_dim, n_latent_var, lr, betas, gamma, K_epochs, eps_clip)
+    ppo = PPO(state_dim, action_dim, n_latent_var, lr, betas, gamma, K_epochs, eps_clip, batch_size)
     print(lr,betas)
     
     # logging variables
